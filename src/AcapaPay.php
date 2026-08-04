@@ -110,12 +110,13 @@ class AcapaPay
         $response = $this->client->request('POST', $this->config->apiHost() . '/v1/checkout/sessions', [
             'headers'     => ['Authorization' => 'Bearer ' . $token],
             'json'        => [
-                'user_id'     => $dados['user_id'],
-                'amount'      => $dados['amount'],
-                'currency'    => $dados['currency'] ?? 'AOA',
-                'success_url' => $dados['success_url'] ?? null,
-                'cancel_url'  => $dados['cancel_url'] ?? null,
-                'metadata'    => $dados['metadata'] ?? [],
+                'user_id'       => $dados['user_id'],
+                'amount'        => $dados['amount'],
+                'currency'      => $dados['currency'] ?? 'AOA',
+                'success_url'   => $dados['success_url'] ?? null,
+                'cancel_url'    => $dados['cancel_url'] ?? null,
+                'origin_domain' => $dados['origin_domain'] ?? $this->origemDominio(),
+                'metadata'      => $dados['metadata'] ?? [],
             ],
             'verify'      => $this->config->verifySsl,
             'http_errors' => false,
@@ -150,6 +151,7 @@ class AcapaPay
                 'plan_reference_code' => $planReferenceCode,
                 'success_url'         => $successUrl,
                 'cancel_url'          => $cancelUrl,
+                'origin_domain'       => $this->origemDominio(),
                 'metadata'            => $metadata,
             ],
             'verify'      => $this->config->verifySsl,
@@ -258,6 +260,24 @@ class AcapaPay
                 . "  apiHost: {$config['apiHost']}\n"
                 . "  Credenciais: válidas",
         ];
+    }
+
+    /**
+     * Resolve o domínio de origem do pedido atual (esquema + host), enviado
+     * ao AcapaPay na criação da sessão para que o SSO autorize o checkout
+     * a ser embutido num iframe a partir deste domínio.
+     */
+    private function origemDominio(): ?string
+    {
+        $request = Services::request();
+
+        if (! method_exists($request, 'getUri')) {
+            return null;
+        }
+
+        $uri = $request->getUri();
+
+        return $uri->getScheme() . '://' . $uri->getAuthority();
     }
 
     /**
