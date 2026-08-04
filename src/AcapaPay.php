@@ -38,7 +38,8 @@ class AcapaPay
      */
     public function autenticar(): string
     {
-        $response = $this->client->request('POST', $this->config->host() . '/oauth/token', [
+        $url      = $this->config->host() . '/oauth/token';
+        $response = $this->client->request('POST', $url, [
             'form_params' => [
                 'grant_type'    => 'client_credentials',
                 'client_id'     => $this->config->clientId,
@@ -48,15 +49,29 @@ class AcapaPay
             'http_errors' => false,
         ]);
 
-        if ($response->getStatusCode() !== 200) {
-            $this->logger->error('AcapaPay SDK: falha na autenticação OAuth. ' . $response->getBody());
+        $statusCode = $response->getStatusCode();
+        $body       = $response->getBody();
 
-            throw new RuntimeException('AcapaPay SDK: Falha na autenticação OAuth. Verifica as tuas credenciais.');
+        if ($statusCode !== 200) {
+            $details = "Status HTTP: {$statusCode}\n"
+                . "URL: {$url}\n"
+                . "Resposta: " . substr($body, 0, 500);
+
+            $this->logger->error('AcapaPay SDK: falha na autenticação OAuth.', ['details' => $details]);
+
+            throw new RuntimeException("AcapaPay SDK: Falha na autenticação OAuth (HTTP {$statusCode}).\n{$details}");
         }
 
-        $data = json_decode($response->getBody(), true);
+        $data = json_decode($body, true);
 
-        return $data['access_token'] ?? throw new RuntimeException('AcapaPay SDK: Resposta de autenticação sem access_token.');
+        if (! isset($data['access_token'])) {
+            $details = "Resposta JSON sem access_token. Resposta: " . substr($body, 0, 500);
+            $this->logger->error('AcapaPay SDK: resposta de autenticação inválida.', ['details' => $details]);
+
+            throw new RuntimeException("AcapaPay SDK: Resposta de autenticação inválida.\n{$details}");
+        }
+
+        return $data['access_token'];
     }
 
     /**
@@ -197,28 +212,51 @@ class AcapaPay
      */
     public function testarConexao(): array
     {
+        $config = [
+            'host'     => $this->config->host(),
+            'apiHost'  => $this->config->apiHost(),
+            'modo'     => $this->config->modo,
+            'clientId' => substr($this->config->clientId ?? 'VAZIO', 0, 10) . '***',
+        ];
+
         try {
             $token = $this->autenticar();
         } catch (RuntimeException $e) {
-            return ['sucesso' => false, 'mensagem' => $e->getMessage()];
+            $msg = "Configuração:\n"
+                . "  modo: {$config['modo']}\n"
+                . "  host: {$config['host']}\n"
+                . "  apiHost: {$config['apiHost']}\n"
+                . "  clientId: {$config['clientId']}\n\n"
+                . "Erro: " . $e->getMessage();
+
+            return ['sucesso' => false, 'mensagem' => $msg];
         }
 
-        $response = $this->client->request('GET', $this->config->apiHost() . '/v1/ping', [
+        $pingUrl  = $this->config->apiHost() . '/v1/ping';
+        $response = $this->client->request('GET', $pingUrl, [
             'headers'     => ['Authorization' => 'Bearer ' . $token],
             'verify'      => $this->config->verifySsl,
             'http_errors' => false,
         ]);
 
-        if ($response->getStatusCode() !== 200) {
+        $statusCode = $response->getStatusCode();
+
+        if ($statusCode !== 200) {
             return [
                 'sucesso'  => false,
-                'mensagem' => 'AcapaPay SDK: Ping falhou (HTTP ' . $response->getStatusCode() . ').',
+                'mensagem' => "AcapaPay SDK: Ping falhou (HTTP {$statusCode}).\n"
+                    . "URL: {$pingUrl}\n"
+                    . "Resposta: " . substr($response->getBody(), 0, 300),
             ];
         }
 
         return [
             'sucesso'  => true,
-            'mensagem' => 'AcapaPay SDK: Ligação estabelecida e credenciais válidas (modo: ' . $this->config->modo . ').',
+            'mensagem' => "✓ AcapaPay SDK: Ligação estabelecida com sucesso!\n"
+                . "  modo: {$config['modo']}\n"
+                . "  host: {$config['host']}\n"
+                . "  apiHost: {$config['apiHost']}\n"
+                . "  Credenciais: válidas",
         ];
     }
 
