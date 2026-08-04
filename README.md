@@ -15,6 +15,7 @@ Este pacote trata automaticamente da comunicação OAuth2 (Server-to-Server), co
 * **Validação de Webhooks (HMAC):** receção segura das notificações de pagamento baseada numa chave secreta, disparando eventos nativos do CodeIgniter (`Events::trigger`).
 * **CLI Diagnostic:** comando `spark` nativo para testar a saúde da conexão entre o teu servidor e o SSO central.
 * **Rota de Webhook Auto-descoberta:** o pacote regista `POST webhooks/acapapay` automaticamente via Auto-Discovery do CodeIgniter (não precisas de editar `app/Config/Routes.php`).
+* **Sincronização de Planos:** comando `spark acapapay:sync-plans` que envia o teu catálogo local (preços/produtos/modelos) para o AcapaPay em lote — necessário porque a criação de sessão de checkout exige um `plan_reference_code` previamente registado no AcapaPay.
 
 ---
 
@@ -91,7 +92,57 @@ php spark acapapay:test-connection
 
 ---
 
-## 4. Iniciar um Pagamento (Checkout)
+## 4. Sincronizar Planos (obrigatório antes do primeiro checkout)
+
+A API de checkout do AcapaPay **exige** um `plan_reference_code` já registado — não aceita apenas um valor avulso (`amount`). Antes de criar sessões de checkout, o teu catálogo local (preços, produtos, modelos) precisa de ser sincronizado como "planos" no AcapaPay.
+
+### Passo 1 — implementa o `PlanoProviderInterface` na tua aplicação:
+
+```php
+<?php
+
+namespace App\Services;
+
+use AcapaPay\CodeIgniter\Contracts\PlanoProviderInterface;
+
+class AcapaPayPlanoProvider implements PlanoProviderInterface
+{
+    public function listarPlanos(): array
+    {
+        $model = new \App\Models\ProdutoModel(); // ou o teu model de preços/planos
+
+        return $model->where('activo', true)->findAll();
+        // cada item precisa de: reference_code, name, price
+        // opcional: description, currency, billing_cycle, features
+    }
+
+    public function marcarSincronizado(string $referenceCode, string $acapapayPlanId): void
+    {
+        (new \App\Models\ProdutoModel())
+            ->where('reference_code', $referenceCode)
+            ->set('acapapay_plan_id', $acapapayPlanId)
+            ->update();
+    }
+}
+```
+
+### Passo 2 — regista o provider em `app/Config/AcapaPay.php`:
+
+```php
+public ?string $planoProvider = \App\Services\AcapaPayPlanoProvider::class;
+```
+
+### Passo 3 — corre a sincronização sempre que os preços mudarem:
+
+```bash
+php spark acapapay:sync-plans
+```
+
+Isto autentica, envia todos os planos ativos em lote (`PUT /v1/billing/plans`) e grava de volta o `id` que o AcapaPay atribuiu a cada plano, via `marcarSincronizado()`. Corre este comando manualmente (ou por um botão no painel de administração) sempre que criares ou editares um item do catálogo — **antes** de tentar criar um checkout para esse item.
+
+---
+
+## 5. Iniciar um Pagamento (Checkout)
 
 O SDK é usado por instância direta — não existem Facades em CodeIgniter 4.
 
@@ -131,16 +182,19 @@ class PagamentoController extends Controller
 }
 ```
 
-### Exemplo por valor (amount/currency):
+### Exemplo com `criarSessaoPagamento()` (também requer `plan_reference_code`):
+
+`criarSessaoPagamento()` faz o mesmo que `checkoutSession()`, mas devolve a resposta completa (não só a `url`) e permite sobrepor o preço do plano pontualmente via `amount`:
 
 ```php
 $dados = $acapapay->criarSessaoPagamento([
-    'user_id'     => $userId,
-    'amount'      => 15000, // cêntimos
-    'currency'    => 'AOA',
-    'success_url' => site_url('pagamento/sucesso'),
-    'cancel_url'  => site_url('pagamento/cancelado'),
-    'metadata'    => ['local_user_id' => $userId],
+    'user_id'             => $userId,
+    'plan_reference_code' => 'PRO_YEARLY',
+    'amount'              => 15000, // opcional: sobrepõe o preço do plano, em cêntimos
+    'currency'            => 'AOA',
+    'success_url'         => site_url('pagamento/sucesso'),
+    'cancel_url'          => site_url('pagamento/cancelado'),
+    'metadata'            => ['local_user_id' => $userId],
 ]);
 
 $urlDePagamento = $dados['url'];
@@ -148,7 +202,7 @@ $urlDePagamento = $dados['url'];
 
 ---
 
-## 5. Integrar Interface (view de iFrame)
+## 6. Integrar Interface (view de iFrame)
 
 Para manter o utilizador dentro do teu site, usa o helper `renderIframe()`, que já escuta os eventos de sucesso/cancelamento transmitidos pelo SSO Central via `postMessage`:
 
@@ -161,7 +215,7 @@ Para manter o utilizador dentro do teu site, usa o helper `renderIframe()`, que 
 
 ---
 
-## 6. Escutar Webhooks (Atualizar Encomendas)
+## 7. Escutar Webhooks (Atualizar Encomendas)
 
 Quando a transação for paga com sucesso (ou falhar), o servidor central envia um *Webhook POST* para a tua aplicação.
 

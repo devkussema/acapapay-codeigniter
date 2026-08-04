@@ -98,26 +98,37 @@ class AcapaPay
     }
 
     /**
-     * Cria uma sessão de pagamento (checkout) por valor, e devolve os
-     * dados completos da resposta (incluindo `url` de redirecionamento).
+     * Cria uma sessão de pagamento (checkout) associada a um plano já
+     * sincronizado (ver `sincronizarPlanos()`), e devolve os dados
+     * completos da resposta (incluindo `url` de redirecionamento).
      *
-     * @param array{user_id: mixed, amount: int, currency?: string, success_url?: string, cancel_url?: string, metadata?: array} $dados
+     * O AcapaPay exige sempre um `plan_reference_code` válido — `amount`
+     * é opcional e serve apenas para sobrepor o preço do plano nesta
+     * sessão específica (ex: descontos pontuais).
+     *
+     * @param array{user_id: mixed, plan_reference_code: string, amount?: int, currency?: string, success_url?: string, cancel_url?: string, metadata?: array} $dados
      */
     public function criarSessaoPagamento(array $dados): array
     {
         $token = $this->obterTokenCached();
 
+        $payload = [
+            'user_id'             => $dados['user_id'],
+            'plan_reference_code' => $dados['plan_reference_code'],
+            'success_url'         => $dados['success_url'] ?? null,
+            'cancel_url'          => $dados['cancel_url'] ?? null,
+            'origin_domain'       => $dados['origin_domain'] ?? $this->origemDominio(),
+            'metadata'            => $dados['metadata'] ?? [],
+        ];
+
+        if (isset($dados['amount'])) {
+            $payload['amount'] = $dados['amount'];
+            $payload['currency'] = $dados['currency'] ?? 'AOA';
+        }
+
         $response = $this->client->request('POST', $this->config->apiHost() . '/v1/checkout/sessions', [
             'headers'     => ['Authorization' => 'Bearer ' . $token],
-            'json'        => [
-                'user_id'       => $dados['user_id'],
-                'amount'        => $dados['amount'],
-                'currency'      => $dados['currency'] ?? 'AOA',
-                'success_url'   => $dados['success_url'] ?? null,
-                'cancel_url'    => $dados['cancel_url'] ?? null,
-                'origin_domain' => $dados['origin_domain'] ?? $this->origemDominio(),
-                'metadata'      => $dados['metadata'] ?? [],
-            ],
+            'json'        => $payload,
             'verify'      => $this->config->verifySsl,
             'http_errors' => false,
         ]);
@@ -167,6 +178,33 @@ class AcapaPay
         $data = json_decode($response->getBody(), true);
 
         return $data['url'] ?? throw new RuntimeException('AcapaPay SDK: Resposta de checkout sem url.');
+    }
+
+    /**
+     * Sincroniza (cria/atualiza em lote) planos no AcapaPay.
+     *
+     * @param list<array{reference_code: string, name: string, price: float, description?: string, currency?: string, billing_cycle?: string, features?: array}> $planos
+     *
+     * @return array{plans?: list<array{reference_code: string, id: string}>} Resposta bruta da API.
+     */
+    public function sincronizarPlanos(array $planos): array
+    {
+        $token = $this->obterTokenCached();
+
+        $response = $this->client->request('PUT', $this->config->apiHost() . '/v1/billing/plans', [
+            'headers'     => ['Authorization' => 'Bearer ' . $token],
+            'json'        => ['plans' => $planos],
+            'verify'      => $this->config->verifySsl,
+            'http_errors' => false,
+        ]);
+
+        if ($response->getStatusCode() >= 300) {
+            $this->logger->error('AcapaPay SDK: erro ao sincronizar planos. ' . $response->getBody());
+
+            throw new RuntimeException('AcapaPay SDK: Falha ao sincronizar planos com o servidor de pagamento.');
+        }
+
+        return json_decode($response->getBody(), true) ?? [];
     }
 
     /**

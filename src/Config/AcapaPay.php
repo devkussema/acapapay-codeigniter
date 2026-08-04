@@ -43,6 +43,14 @@ class AcapaPay extends BaseConfig
 
     public bool $verifySsl = true;
 
+    /**
+     * Classe concreta (nome totalmente qualificado) que implementa
+     * `AcapaPay\CodeIgniter\Contracts\PlanoProviderInterface`, usada pelo
+     * comando `spark acapapay:sync-plans`. Definir no `app/Config/AcapaPay.php`
+     * do host (que estende esta classe).
+     */
+    public ?string $planoProvider = null;
+
     public function host(): string
     {
         if ($this->host) {
