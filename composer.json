@@ -1,0 +1,21 @@
+{
+    "name": "devkussema/acapapay-codeigniter",
+    "description": "SDK Oficial AcapaPay para integração rápida em aplicações CodeIgniter 4.",
+    "type": "library",
+    "license": "MIT",
+    "authors": [
+        {
+            "name": "Augusto Kussema",
+            "email": "dev.kussema@gmail.com"
+        }
+    ],
+    "require": {
+        "php": "^8.1",
+        "codeigniter4/framework": "^4.4"
+    },
+    "autoload": {
+        "psr-4": {
+            "AcapaPay\\CodeIgniter\\": "src/"
+        }
+    }
+}
