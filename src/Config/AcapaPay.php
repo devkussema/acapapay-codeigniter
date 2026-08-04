@@ -25,13 +25,30 @@ class AcapaPay extends BaseConfig
 
     /**
      * 'sandbox' ou 'producao'.
+     * Usado apenas se $host e $apiHost estiverem null.
      */
     public string $modo = 'producao';
+
+    /**
+     * URL customizada do servidor de identidade (ex: para localhost/desenvolvimento).
+     * Se definida, sobrepõe a escolha baseada em $modo.
+     */
+    public ?string $host = null;
+
+    /**
+     * URL customizada da API.
+     * Se definida, sobrepõe a escolha baseada em $modo.
+     */
+    public ?string $apiHost = null;
 
     public bool $verifySsl = true;
 
     public function host(): string
     {
+        if ($this->host) {
+            return $this->host;
+        }
+
         return $this->modo === 'sandbox'
             ? 'https://sandbox.acapadev.com'
             : 'https://id.acapadev.com';
@@ -39,6 +56,10 @@ class AcapaPay extends BaseConfig
 
     public function apiHost(): string
     {
+        if ($this->apiHost) {
+            return $this->apiHost;
+        }
+
         return $this->modo === 'sandbox'
             ? 'https://sandbox-api.acapadev.com'
             : 'https://api.acapadev.com';

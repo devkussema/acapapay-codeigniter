@@ -50,9 +50,6 @@ O helper `config('AcapaPay')` do CodeIgniter resolve automaticamente para a tua 
 A tua aplicação precisa de se identificar perante o AcapaPay (SSO). Cria uma "OAuth App" no painel do SSO e adiciona as seguintes credenciais ao teu ficheiro `.env`:
 
 ```env
-# 'sandbox' ou 'producao' — troca automaticamente os hosts de id/api
-acapapay.modo = producao
-
 # O teu Client ID (App ID) gerado no Painel de Developer do SSO
 acapapay.clientId = 9a8b7c6d-1234-5678-abcd...
 
@@ -63,7 +60,19 @@ acapapay.clientSecret = super_secret_string...
 # Essencial para garantir que os Webhooks vêm legitimamente do AcapaPay.
 acapapay.webhookSecret = hmac_secret_aqui...
 
-# (Opcional) Desativa verificação SSL (útil para desenvolvimento local)
+# (Opcional) 'sandbox' ou 'producao' — troca automaticamente os hosts de id/api.
+# Ignorado se host/apiHost customizados estiverem definidos.
+# acapapay.modo = producao
+
+# (Opcional) URL customizada do servidor de identidade (sobrepõe modo).
+# Útil para desenvolvimento local apontando para um SSO local.
+# acapapay.host = https://id.sso_acapadev.me
+
+# (Opcional) URL customizada da API (sobrepõe modo).
+# Útil para desenvolvimento local apontando para um SSO local.
+# acapapay.apiHost = https://api.sso_acapadev.me
+
+# (Opcional) Desativa verificação SSL (útil para desenvolvimento local com certificados self-signed)
 # acapapay.verifySsl = false
 ```
 
