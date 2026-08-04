@@ -2,6 +2,7 @@
     "name": "devkussema/acapapay-codeigniter",
     "description": "SDK Oficial AcapaPay para integração rápida em aplicações CodeIgniter 4.",
     "type": "library",
+    "version": "1.0.0",
     "license": "MIT",
     "authors": [
         {
