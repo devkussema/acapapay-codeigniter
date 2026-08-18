@@ -230,6 +230,133 @@ class AcapaPay
     }
 
     /**
+     * Cria uma Invoice (fatura), representando a dívida/carrinho de compras.
+     * Uma Invoice nunca expira e é imutável — deve ser criada uma única vez
+     * por compra; retomas de pagamento devem reutilizar o `invoice_id`
+     * devolvido aqui e criar apenas novas Charges (ver `criarCobranca()`).
+     *
+     * `organization_id` é opcional: quando omitido, a API identifica a
+     * organização pelo `client_id`/`client_secret` já autenticados (o mesmo
+     * princípio usado em `criarSessaoPagamento()`). Só é necessário indicá-lo
+     * explicitamente em integrações multi-organização.
+     *
+     * @param array{organization_id?: ?string, customer_name: string, amount: int, currency?: string, description?: string, items: list<array{description: string, quantity: int, unit_price: int}>} $dados
+     */
+    public function criarFatura(array $dados): array
+    {
+        $token = $this->obterTokenCached();
+
+        $payload = [
+            'customer_name' => $dados['customer_name'],
+            'amount'        => $dados['amount'],
+            'currency'      => $dados['currency'] ?? 'AOA',
+            'description'   => $dados['description'] ?? null,
+            'items'         => $dados['items'] ?? [],
+        ];
+
+        if (!empty($dados['organization_id'])) {
+            $payload['organization_id'] = $dados['organization_id'];
+        }
+
+        $response = $this->client->request('POST', $this->config->apiHost() . '/v1/billing/invoices', [
+            'headers'     => ['Authorization' => 'Bearer ' . $token],
+            'json'        => $payload,
+            'verify'      => $this->config->verifySsl,
+            'http_errors' => false,
+        ]);
+
+        if ($response->getStatusCode() >= 300) {
+            $this->logger->error('AcapaPay SDK: erro ao criar fatura. ' . $response->getBody());
+
+            throw new RuntimeException('AcapaPay SDK: Falha ao comunicar com o servidor de pagamento para criar fatura.');
+        }
+
+        return json_decode($response->getBody(), true) ?? [];
+    }
+
+    /**
+     * Cria uma Charge (tentativa de pagamento) para uma Invoice existente.
+     * As Charges expiram (ex: referências Multicaixa) — se o utilizador
+     * abandonar o pagamento, cria-se apenas uma nova Charge para a mesma
+     * Invoice, nunca uma Invoice nova.
+     *
+     * O timeout é aumentado porque, para alguns métodos (ex: GPO), a API
+     * contacta os bancos em tempo real antes de responder.
+     */
+    public function criarCobranca(string $invoiceId, string $paymentMethod, ?string $customerPhone = null): array
+    {
+        $token = $this->obterTokenCached();
+
+        $payload = ['payment_method' => $paymentMethod];
+        if ($customerPhone) {
+            $payload['phone_number'] = $customerPhone;
+        }
+
+        $response = $this->client->request('POST', $this->config->apiHost() . '/v1/billing/invoices/' . $invoiceId . '/charges', [
+            'headers'     => ['Authorization' => 'Bearer ' . $token],
+            'json'        => $payload,
+            'verify'      => $this->config->verifySsl,
+            'http_errors' => false,
+            'timeout'     => 60,
+        ]);
+
+        if ($response->getStatusCode() >= 300) {
+            $this->logger->error('AcapaPay SDK: erro ao criar cobrança. ' . $response->getBody());
+
+            throw new RuntimeException('AcapaPay SDK: Falha ao comunicar com o servidor de pagamento para criar cobrança.');
+        }
+
+        return json_decode($response->getBody(), true) ?? [];
+    }
+
+    /**
+     * Consulta o estado atual de uma fatura para polling do frontend.
+     * Devolve `invoice_status`: pending, paid, expired ou cancelled.
+     */
+    public function consultarStatusFatura(string $invoiceId): array
+    {
+        $token = $this->obterTokenCached();
+
+        $response = $this->client->request('GET', $this->config->apiHost() . '/v1/billing/invoices/' . $invoiceId . '/status', [
+            'headers'     => ['Authorization' => 'Bearer ' . $token],
+            'verify'      => $this->config->verifySsl,
+            'http_errors' => false,
+        ]);
+
+        if ($response->getStatusCode() >= 300) {
+            $this->logger->error('AcapaPay SDK: erro ao consultar status da fatura. ' . $response->getBody());
+
+            throw new RuntimeException('AcapaPay SDK: Falha ao comunicar com o servidor de pagamento para consultar o status da fatura.');
+        }
+
+        return json_decode($response->getBody(), true) ?? [];
+    }
+
+    /**
+     * Marca uma fatura como paga instantaneamente no ambiente Sandbox,
+     * para permitir testar o fluxo de pagamento sem transações reais.
+     * Não deve ser exposta/chamada fora de `modo === 'sandbox'`.
+     */
+    public function simularPagamento(string $invoiceId): array
+    {
+        $token = $this->obterTokenCached();
+
+        $response = $this->client->request('POST', $this->config->apiHost() . '/v1/billing/invoices/' . $invoiceId . '/simulate', [
+            'headers'     => ['Authorization' => 'Bearer ' . $token],
+            'verify'      => $this->config->verifySsl,
+            'http_errors' => false,
+        ]);
+
+        if ($response->getStatusCode() >= 300) {
+            $this->logger->error('AcapaPay SDK: erro ao simular pagamento. ' . $response->getBody());
+
+            throw new RuntimeException('AcapaPay SDK: Falha ao simular pagamento da fatura.');
+        }
+
+        return json_decode($response->getBody(), true) ?? [];
+    }
+
+    /**
      * Valida a assinatura HMAC-SHA256 de um payload de webhook.
      */
     public function validarAssinaturaWebhook(string $payload, string $signature): bool

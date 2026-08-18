@@ -24,6 +24,12 @@ class AcapaPay extends BaseConfig
     public ?string $webhookSecret = null;
 
     /**
+     * ID da organização no SSO da AcapaDev, usado como `organization_id`
+     * ao criar Invoices via `criarFatura()`.
+     */
+    public ?string $organizationId = null;
+
+    /**
      * 'sandbox' ou 'producao'.
      * Usado apenas se $host e $apiHost estiverem null.
      */
