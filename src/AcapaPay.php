@@ -235,28 +235,57 @@ class AcapaPay
      * por compra; retomas de pagamento devem reutilizar o `invoice_id`
      * devolvido aqui e criar apenas novas Charges (ver `criarCobranca()`).
      *
-     * `organization_id` é opcional: quando omitido, a API identifica a
-     * organização pelo `client_id`/`client_secret` já autenticados (o mesmo
-     * princípio usado em `criarSessaoPagamento()`). Só é necessário indicá-lo
-     * explicitamente em integrações multi-organização.
-     *
-     * @param array{organization_id?: ?string, customer_name: string, amount: int, currency?: string, description?: string, items: list<array{description: string, quantity: int, unit_price: int}>} $dados
+     * @param array<string, mixed> $dados {
+     *     @type string      $customer_name             Obrigatório.
+     *     @type string      $customer_email            Opcional.
+     *     @type string      $customer_nif              Opcional.
+     *     @type int|float   $amount                    Opcional quando $items é passado.
+     *     @type string      $currency                  'AOA' (omissão) ou 'USD'.
+     *     @type string      $description               Opcional.
+     *     @type array       $items                     Lista de itens [['description', 'quantity', 'unit_price'], ...].
+     *     @type string      $app_reference             Referência interna do pedido.
+     *     @type string      $due_date                  Opcional.
+     *     @type string      $success_url               URL de retorno em caso de sucesso.
+     *     @type string      $cancel_url                URL de retorno em caso de cancelamento.
+     *     @type array       $metadata                  Metadados devolvidos no webhook invoice.paid.
+     *     @type string      $preferred_payment_method  REF|GPO|GPO_DEEPLINK|GPO_QR|EKZ|RDP|WIP.
+     *     @type string|null $organization_id           Opcional.
+     * }
      */
     public function criarFatura(array $dados): array
     {
+        if (empty($dados['customer_name'])) {
+            throw new InvalidArgumentException('AcapaPay SDK: "customer_name" é obrigatório para criar uma fatura.');
+        }
+
+        $currency = strtoupper((string) ($dados['currency'] ?? Currency::AOA));
+        if (! Currency::isValid($currency)) {
+            throw new InvalidArgumentException('AcapaPay SDK: moeda inválida. Use Currency::AOA ou Currency::USD.');
+        }
+
         $token = $this->obterTokenCached();
 
-        $payload = [
-            'customer_name' => $dados['customer_name'],
-            'amount'        => $dados['amount'],
-            'currency'      => $dados['currency'] ?? 'AOA',
-            'description'   => $dados['description'] ?? null,
-            'items'         => $dados['items'] ?? [],
-        ];
-
-        if (!empty($dados['organization_id'])) {
-            $payload['organization_id'] = $dados['organization_id'];
+        $metadata = $dados['metadata'] ?? [];
+        if ($this->config->modo === 'sandbox') {
+            $metadata['sandbox_mode'] = true;
         }
+
+        $payload = array_filter([
+            'customer_name'            => $dados['customer_name'],
+            'customer_email'           => $dados['customer_email'] ?? null,
+            'customer_nif'             => $dados['customer_nif'] ?? null,
+            'amount'                   => $dados['amount'] ?? null,
+            'currency'                 => $currency,
+            'description'              => $dados['description'] ?? null,
+            'items'                    => $dados['items'] ?? [],
+            'app_reference'            => $dados['app_reference'] ?? null,
+            'due_date'                 => $dados['due_date'] ?? null,
+            'success_url'              => $dados['success_url'] ?? null,
+            'cancel_url'               => $dados['cancel_url'] ?? null,
+            'preferred_payment_method' => isset($dados['preferred_payment_method']) ? strtoupper((string) $dados['preferred_payment_method']) : null,
+            'organization_id'          => $dados['organization_id'] ?? $this->config->organizationId,
+            'metadata'                 => $metadata,
+        ], static fn ($value) => $value !== null);
 
         $response = $this->client->request('POST', $this->config->apiHost() . '/v1/billing/invoices', [
             'headers'     => ['Authorization' => 'Bearer ' . $token],
@@ -275,16 +304,46 @@ class AcapaPay
     }
 
     /**
-     * Cria uma Charge (tentativa de pagamento) para uma Invoice existente.
-     * As Charges expiram (ex: referências Multicaixa) — se o utilizador
-     * abandonar o pagamento, cria-se apenas uma nova Charge para a mesma
-     * Invoice, nunca uma Invoice nova.
-     *
-     * O timeout é aumentado porque, para alguns métodos (ex: GPO), a API
-     * contacta os bancos em tempo real antes de responder.
+     * Alias em inglês para `criarFatura()` (compatível com o SDK Laravel).
      */
-    public function criarCobranca(string $invoiceId, string $paymentMethod, ?string $customerPhone = null): array
+    public function createInvoice(array $attributes): array
     {
+        return $this->criarFatura($attributes);
+    }
+
+    /**
+     * Cria uma Charge (tentativa de pagamento) para uma Invoice existente.
+     * Suporta todos os métodos:
+     * - `PaymentMethod::REF` (Referência Multicaixa)
+     * - `PaymentMethod::GPO` (Multicaixa Express Push por Nº de telefone)
+     * - `PaymentMethod::GPO_DEEPLINK` (Multicaixa Express Deeplink `mcxwallet://`)
+     * - `PaymentMethod::GPO_QR` (Multicaixa Express Código QR EMIS em Base64)
+     * - `PaymentMethod::WIP` (WiPay Checkout Hospedado)
+     * - `PaymentMethod::RDP` (RedotPay Cripto/USDT em USD)
+     * - `PaymentMethod::EKZ` (E-Kwanza)
+     *
+     * Devolve um `ChargeResult` que implementa `ArrayAccess` (podes continuar a usar
+     * `$res['data']['...']` como array ou usar `$res->qrCodeImage()`, `$res->deeplink()`,
+     * `$res->reference()`, `$res->payUrl()`, etc.).
+     */
+    public function criarCobranca(string $invoiceId, string $paymentMethod, ?string $customerPhone = null): ChargeResult
+    {
+        $paymentMethod = strtoupper($paymentMethod);
+
+        if (! PaymentMethod::isValid($paymentMethod)) {
+            throw new InvalidArgumentException(
+                'AcapaPay SDK: método de pagamento inválido: ' . $paymentMethod
+                . '. Use uma constante de ' . PaymentMethod::class . '.'
+            );
+        }
+
+        if (PaymentMethod::requiresPhoneNumber($paymentMethod) && empty($customerPhone)) {
+            throw new InvalidArgumentException(
+                'AcapaPay SDK: o método ' . PaymentMethod::label($paymentMethod)
+                . ' exige o número de telemóvel do cliente.'
+            );
+        }
+
         $token = $this->obterTokenCached();
 
         $payload = ['payment_method' => $paymentMethod];
@@ -306,7 +365,143 @@ class AcapaPay
             throw new RuntimeException('AcapaPay SDK: Falha ao comunicar com o servidor de pagamento para criar cobrança.');
         }
 
-        return json_decode($response->getBody(), true) ?? [];
+        $result = json_decode($response->getBody(), true) ?? [];
+
+        return ChargeResult::fromArray(array_merge(['invoice_id' => $invoiceId], $result));
+    }
+
+    /**
+     * Alias em inglês para `criarCobranca()` (compatível com o SDK Laravel).
+     */
+    public function charge(string $invoiceId, string $paymentMethod, ?string $phoneNumber = null): ChargeResult
+    {
+        return $this->criarCobranca($invoiceId, $paymentMethod, $phoneNumber);
+    }
+
+    /**
+     * Atalho para cobrança via Referência Multicaixa (`REF`, AOA).
+     */
+    public function cobrarPorReferencia(string $invoiceId): ChargeResult
+    {
+        return $this->criarCobranca($invoiceId, PaymentMethod::REF);
+    }
+
+    /**
+     * Atalho para cobrança via Multicaixa Express Push por telefone (`GPO`, AOA).
+     */
+    public function cobrarPorExpress(string $invoiceId, string $phoneNumber): ChargeResult
+    {
+        return $this->criarCobranca($invoiceId, PaymentMethod::GPO, $phoneNumber);
+    }
+
+    /**
+     * Atalho para cobrança via Multicaixa Express Deeplink (`GPO_DEEPLINK`, AOA).
+     * Devolve `$result->deeplink()` (`mcxwallet://purchase?...`).
+     */
+    public function cobrarPorDeeplink(string $invoiceId): ChargeResult
+    {
+        return $this->criarCobranca($invoiceId, PaymentMethod::GPO_DEEPLINK);
+    }
+
+    public function chargeWithDeeplink(string $invoiceId): ChargeResult
+    {
+        return $this->cobrarPorDeeplink($invoiceId);
+    }
+
+    /**
+     * Atalho para cobrança via Multicaixa Express Código QR EMIS (`GPO_QR`, AOA).
+     * Devolve `$result->qrCodeImage()` (`data:image/png;base64,...`) pronto para `<img src="...">`.
+     */
+    public function cobrarPorQrCode(string $invoiceId): ChargeResult
+    {
+        return $this->criarCobranca($invoiceId, PaymentMethod::GPO_QR);
+    }
+
+    public function chargeWithQrCode(string $invoiceId): ChargeResult
+    {
+        return $this->cobrarPorQrCode($invoiceId);
+    }
+
+    /**
+     * Atalho para cobrança via WiPay Checkout Hospedado (`WIP`, AOA).
+     * Devolve `$result->payUrl()`.
+     */
+    public function cobrarComWipay(string $invoiceId, ?string $phoneNumber = null): ChargeResult
+    {
+        return $this->criarCobranca($invoiceId, PaymentMethod::WIP, $phoneNumber);
+    }
+
+    public function chargeWithWipay(string $invoiceId, ?string $phoneNumber = null): ChargeResult
+    {
+        return $this->cobrarComWipay($invoiceId, $phoneNumber);
+    }
+
+    /**
+     * Atalho para cobrança em criptomoeda via RedotPay (`RDP`, USD).
+     * Devolve `$result->payUrl()`, `$result->paymentMethods()` e `$result->qrCodeUrls()`.
+     */
+    public function cobrarComCripto(string $invoiceId): ChargeResult
+    {
+        return $this->criarCobranca($invoiceId, PaymentMethod::RDP);
+    }
+
+    public function chargeWithCrypto(string $invoiceId): ChargeResult
+    {
+        return $this->cobrarComCripto($invoiceId);
+    }
+
+    /**
+     * Cria a fatura (AOA) e gera imediatamente o Código QR EMIS (`GPO_QR`) num só passo.
+     */
+    public function criarCobrancaQrCode(array $dadosFatura): ChargeResult
+    {
+        $dadosFatura['currency']                 = Currency::AOA;
+        $dadosFatura['preferred_payment_method'] = PaymentMethod::GPO_QR;
+
+        $invoice = $this->criarFatura($dadosFatura);
+
+        return $this->cobrarPorQrCode((string) $invoice['invoice_id']);
+    }
+
+    public function createQrCharge(array $invoiceAttributes): ChargeResult
+    {
+        return $this->criarCobrancaQrCode($invoiceAttributes);
+    }
+
+    /**
+     * Cria a fatura (AOA) e gera imediatamente o Deeplink Multicaixa Express (`GPO_DEEPLINK`) num só passo.
+     */
+    public function criarCobrancaDeeplink(array $dadosFatura): ChargeResult
+    {
+        $dadosFatura['currency']                 = Currency::AOA;
+        $dadosFatura['preferred_payment_method'] = PaymentMethod::GPO_DEEPLINK;
+
+        $invoice = $this->criarFatura($dadosFatura);
+
+        return $this->cobrarPorDeeplink((string) $invoice['invoice_id']);
+    }
+
+    public function createDeeplinkCharge(array $invoiceAttributes): ChargeResult
+    {
+        return $this->criarCobrancaDeeplink($invoiceAttributes);
+    }
+
+    /**
+     * Cria a fatura (USD) e gera imediatamente a cobrança Cripto RedotPay (`RDP`) num só passo.
+     */
+    public function criarCobrancaCripto(array $dadosFatura): ChargeResult
+    {
+        $dadosFatura['currency']                 = Currency::USD;
+        $dadosFatura['preferred_payment_method'] = PaymentMethod::RDP;
+
+        $invoice = $this->criarFatura($dadosFatura);
+
+        return $this->cobrarComCripto((string) $invoice['invoice_id']);
+    }
+
+    public function createCryptoCharge(array $invoiceAttributes): ChargeResult
+    {
+        return $this->criarCobrancaCripto($invoiceAttributes);
     }
 
     /**
@@ -329,16 +524,34 @@ class AcapaPay
             throw new RuntimeException('AcapaPay SDK: Falha ao comunicar com o servidor de pagamento para consultar o status da fatura.');
         }
 
-        return json_decode($response->getBody(), true) ?? [];
+        $res = json_decode($response->getBody(), true) ?? [];
+
+        return $res['data'] ?? $res;
+    }
+
+    /**
+     * Verifica se a fatura já se encontra paga.
+     */
+    public function faturaPaga(string $invoiceId): bool
+    {
+        return ($this->consultarStatusFatura($invoiceId)['invoice_status'] ?? null) === 'paid';
+    }
+
+    public function isPaid(string $invoiceId): bool
+    {
+        return $this->faturaPaga($invoiceId);
     }
 
     /**
      * Marca uma fatura como paga instantaneamente no ambiente Sandbox,
      * para permitir testar o fluxo de pagamento sem transações reais.
-     * Não deve ser exposta/chamada fora de `modo === 'sandbox'`.
      */
     public function simularPagamento(string $invoiceId): array
     {
+        if ($this->config->modo !== 'sandbox') {
+            throw new RuntimeException('AcapaPay SDK: simularPagamento() só está disponível quando modo === "sandbox".');
+        }
+
         $token = $this->obterTokenCached();
 
         $response = $this->client->request('POST', $this->config->apiHost() . '/v1/billing/invoices/' . $invoiceId . '/simulate', [
@@ -354,6 +567,130 @@ class AcapaPay
         }
 
         return json_decode($response->getBody(), true) ?? [];
+    }
+
+    /**
+     * Solicita o estorno/reembolso (total ou parcial) de uma fatura paga.
+     */
+    public function reembolsarFatura(string $invoiceId, ?float $amount = null, ?string $reason = null): array
+    {
+        $token = $this->obterTokenCached();
+
+        $body = [];
+        if ($amount !== null) {
+            $body['amount'] = $amount;
+        }
+        if ($reason !== null) {
+            $body['reason'] = $reason;
+        }
+
+        $response = $this->client->request('POST', $this->config->apiHost() . '/v1/billing/invoices/' . $invoiceId . '/refund', [
+            'headers'     => ['Authorization' => 'Bearer ' . $token],
+            'json'        => $body,
+            'verify'      => $this->config->verifySsl,
+            'http_errors' => false,
+        ]);
+
+        if ($response->getStatusCode() >= 300) {
+            $this->logger->error('AcapaPay SDK: erro ao reembolsar fatura. ' . $response->getBody());
+
+            throw new RuntimeException('AcapaPay SDK: Falha ao reembolsar fatura.');
+        }
+
+        $res = json_decode($response->getBody(), true) ?? [];
+
+        if (isset($res['data']) && is_array($res['data'])) {
+            return array_merge($res, $res['data']);
+        }
+
+        return $res;
+    }
+
+    public function refund(string $invoiceId, ?float $amount = null, ?string $reason = null): array
+    {
+        return $this->reembolsarFatura($invoiceId, $amount, $reason);
+    }
+
+    /**
+     * Consulta o saldo disponível da aplicação, configurações bancárias e histórico de saques.
+     */
+    public function consultarSaques(int $page = 1): array
+    {
+        $token = $this->obterTokenCached();
+
+        $response = $this->client->request('GET', $this->config->apiHost() . '/v1/billing/payouts?page=' . $page, [
+            'headers'     => ['Authorization' => 'Bearer ' . $token],
+            'verify'      => $this->config->verifySsl,
+            'http_errors' => false,
+        ]);
+
+        if ($response->getStatusCode() >= 300) {
+            $this->logger->error('AcapaPay SDK: erro ao consultar saques. ' . $response->getBody());
+
+            throw new RuntimeException('AcapaPay SDK: Falha ao consultar saques.');
+        }
+
+        return json_decode($response->getBody(), true) ?? [];
+    }
+
+    public function getPayouts(int $page = 1): array
+    {
+        return $this->consultarSaques($page);
+    }
+
+    /**
+     * Solicita um saque manual para a aplicação autenticada.
+     */
+    public function solicitarSaque(float $amount): array
+    {
+        $token = $this->obterTokenCached();
+
+        $response = $this->client->request('POST', $this->config->apiHost() . '/v1/billing/payouts', [
+            'headers'     => ['Authorization' => 'Bearer ' . $token],
+            'json'        => ['amount' => $amount],
+            'verify'      => $this->config->verifySsl,
+            'http_errors' => false,
+        ]);
+
+        if ($response->getStatusCode() >= 300) {
+            $this->logger->error('AcapaPay SDK: erro ao solicitar saque. ' . $response->getBody());
+
+            throw new RuntimeException('AcapaPay SDK: Falha ao solicitar saque.');
+        }
+
+        return json_decode($response->getBody(), true) ?? [];
+    }
+
+    public function requestPayout(float $amount): array
+    {
+        return $this->solicitarSaque($amount);
+    }
+
+    /**
+     * Cancela uma solicitação de saque pendente.
+     */
+    public function cancelarSaque(int $payoutId): array
+    {
+        $token = $this->obterTokenCached();
+
+        $response = $this->client->request('POST', $this->config->apiHost() . '/v1/billing/payouts/' . $payoutId . '/cancel', [
+            'headers'     => ['Authorization' => 'Bearer ' . $token],
+            'verify'      => $this->config->verifySsl,
+            'http_errors' => false,
+        ]);
+
+        if ($response->getStatusCode() >= 300) {
+            $this->logger->error('AcapaPay SDK: erro ao cancelar saque. ' . $response->getBody());
+
+            throw new RuntimeException('AcapaPay SDK: Falha ao cancelar saque.');
+        }
+
+        return json_decode($response->getBody(), true) ?? [];
+    }
+
+    public function cancelPayout(int $payoutId): array
+    {
+        return $this->cancelarSaque($payoutId);
     }
 
     /**

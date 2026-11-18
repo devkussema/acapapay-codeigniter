@@ -240,6 +240,83 @@ Events::on('acapapay:invoice.paid', function (array $data) {
 
 ---
 
+## 8. Pagamento Direto / Headless (QR Code, Deeplink, Referência, Express, WiPay e Cripto)
+
+Além do checkout hospedado por planos, podes criar faturas avulsas e gerar cobranças diretamente no método pretendido usando `AcapaPay\CodeIgniter\Enums\PaymentMethod`, recebendo um objeto `ChargeResult` (que também funciona como `array`):
+
+| Constante | Método | Moeda | Helper rápido |
+|---|---|---|---|
+| `PaymentMethod::REF` | Referência Multicaixa | `AOA` | `$acapapay->cobrarPorReferencia($invoiceId)` |
+| `PaymentMethod::GPO` | Multicaixa Express (Push Telefone) | `AOA` | `$acapapay->cobrarPorExpress($invoiceId, '923000000')` |
+| `PaymentMethod::GPO_QR` | Multicaixa Express (Código QR EMIS) | `AOA` | `$acapapay->cobrarPorQrCode($invoiceId)` |
+| `PaymentMethod::GPO_DEEPLINK` | Multicaixa Express (Deeplink App) | `AOA` | `$acapapay->cobrarPorDeeplink($invoiceId)` |
+| `PaymentMethod::WIP` | WiPay Checkout Hospedado | `AOA` | `$acapapay->cobrarComWipay($invoiceId)` |
+| `PaymentMethod::RDP` | RedotPay (Cripto / USDT) | `USD` | `$acapapay->cobrarComCripto($invoiceId)` |
+
+### Exemplo — Gerar Código QR EMIS (`GPO_QR`) ou Deeplink (`GPO_DEEPLINK`)
+
+```php
+use AcapaPay\CodeIgniter\AcapaPay;
+use AcapaPay\CodeIgniter\Enums\Currency;
+use AcapaPay\CodeIgniter\Enums\PaymentMethod;
+
+$acapapay = new AcapaPay();
+
+// Opção A: Criar fatura + cobrança QR Code num único passo
+$charge = $acapapay->criarCobrancaQrCode([
+    'customer_name'  => 'João Silva',
+    'customer_email' => 'joao@exemplo.ao',
+    'items'          => [
+        ['description' => 'Subscrição Mensal', 'quantity' => 1, 'unit_price' => 5000],
+    ],
+]);
+
+// Na tua view:
+// <img src="<?= esc($charge->qrCodeImage()) ?>" alt="Código QR Multicaixa Express">
+
+// Opção B: Em 2 passos (permite escolher outro método para a mesma fatura)
+$fatura = $acapapay->criarFatura([
+    'customer_name' => 'João Silva',
+    'currency'      => Currency::AOA,
+    'items'         => [
+        ['description' => 'Subscrição Mensal', 'quantity' => 1, 'unit_price' => 5000],
+    ],
+]);
+
+$invoiceId = $fatura['invoice_id'];
+
+// Gerar Deeplink Mobile (mcxwallet://purchase?...)
+$deeplinkCharge = $acapapay->cobrarPorDeeplink($invoiceId);
+$linkApp = $deeplinkCharge->deeplink();
+
+// Ou gerar link de pagamento hospedado WiPay
+$wipayCharge = $acapapay->cobrarComWipay($invoiceId);
+$payUrl = $wipayCharge->payUrl();
+```
+
+---
+
+## 9. Reembolsos (`refund`) e Saques (`payouts`)
+
+```php
+$acapapay = new AcapaPay();
+
+// Reembolsar fatura paga (total ou parcial)
+$acapapay->reembolsarFatura($invoiceId, amount: null, reason: 'Cancelamento do pedido');
+
+// Consultar saldo disponível e histórico de saques da aplicação
+$dadosSaque = $acapapay->consultarSaques(page: 1);
+
+// Solicitar saque manual (em AOA)
+$saque = $acapapay->solicitarSaque(50000.00);
+
+// Cancelar saque pendente
+$acapapay->cancelarSaque((int) $saque['payout']['id']);
+```
+
+---
+
 ## Licença
 
 Distribuído sob a licença **MIT**.
+
